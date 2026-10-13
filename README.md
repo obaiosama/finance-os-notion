@@ -1,31 +1,58 @@
-# Finance OS
+# Finance OS (Notion)
 
-A finance operating system built in Notion with an automation layer on Make.com. It links accounts, transactions, expenses and subscriptions, so monthly budget pacing and upcoming renewals come from the data instead of being tracked by hand, and bank statements flow in through an intake pipeline that checks every file before it is accepted.
+A finance system built in Notion that links accounts, transactions, expenses and subscriptions, with budget pacing, renewal triggers and reconciliation tracking. A Make.com pipeline handles statement intake: it validates uploaded PDFs, catches duplicates with a file fingerprint, retries failed items and writes status and errors back to Notion.
 
-## What it does
+## Architecture
 
-- **Linked records.** Accounts, transactions, expenses and subscriptions are connected through Notion relations.
-- **Rollups and formulas.** Rollups and Notion's Formulas 2.0 drive budget pacing, so monthly spending is compared with the budget automatically.
-- **Renewal triggers.** Subscriptions have renewal triggers, so upcoming renewals are surfaced.
-- **Reconciliation tracking.** The system tracks reconciliation of records against account activity.
-- **Statement intake automation.** A Make.com scenario watches a Notion database for uploaded statement files and processes each one (details below).
+```mermaid
+flowchart LR
+    subgraph N["Notion workspace"]
+        ACC["Accounts"] --- TX["Transactions"]
+        TX --- EXP["Expenses"]
+        SUB["Subscriptions"] --- EXP
+        BUD["Monthly budget"] --- EXP
+        EXP --> CALC["Rollups +<br/>Formulas 2.0"]
+        CALC --> OUT1["Budget pacing"]
+        CALC --> OUT2["Renewal triggers"]
+        CALC --> OUT3["Reconciliation<br/>tracking"]
+    end
+    subgraph M["Make.com statement intake"]
+        W["Watch intake DB<br/>Not started / Failed"] --> V["Validate<br/>.pdf + content type"]
+        V --> FP["File fingerprint<br/>vs data store"]
+        FP --> UP["Write status, error<br/>+ timestamp"]
+        V -. error .-> R["Retry, then<br/>dead-letter queue"]
+        R -.-> UP
+    end
+    UP --> N
+    classDef calc fill:#eef2ff,stroke:#6366f1,color:#1e1b4b
+    class CALC calc
+    classDef node fill:#ffffff,stroke:#94a3b8,color:#0f172a
+    class ACC,TX,EXP,SUB,BUD,OUT1,OUT2,OUT3,W,V,FP,UP,R node
+    style N fill:#f8fafc,stroke:#cbd5e1
+    style M fill:#f8fafc,stroke:#cbd5e1
+```
 
-## Statement intake pipeline
 
-1. **Watch.** The scenario watches a Notion database for new or updated statement items.
-2. **Pick the work.** It processes items that are new or that failed before, so failures are retried. Items already marked Done are skipped.
-3. **Validate.** It checks that a file is attached and that the file name ends in .pdf. Anything else is marked Failed with a plain-language error such as "No File Uploaded" or "File Not PDF".
-4. **Download and verify.** It downloads the file and confirms the content type really is a PDF. A download that is not a PDF is marked Failed with its own error.
-5. **Catch duplicates.** It builds a fingerprint of the file and checks it against a data store, so the same statement is not processed twice.
-6. **Write back.** Every outcome, success or failure, is written back to the Notion item with a status, an error message and a timestamp, so the Notion view always shows what happened.
+## How it works
 
-## Design choices
+1. **Model the money.** Accounts, transactions, expenses, subscriptions and monthly budgets are separate Notion databases linked by relations. Rollups and Formulas 2.0 compute spend against budget, upcoming renewals and which items are reconciled.
+2. **Drop in a statement.** Adding a statement file to the intake database sets its status to *Not started*.
+3. **Validate.** The pipeline checks the file name and the downloaded content type before doing anything with it.
+4. **De-duplicate.** A fingerprint built from the file's size and slices of its data is checked against a data store, so the same statement is never processed twice, even if renamed.
+5. **Report back.** Every item ends as *Done* or *Failed*, with the error text and a timestamp written back to the Notion row.
 
-- **One source of truth.** A record is entered once and the rest is derived from it through relations and rollups.
-- **Derived numbers, not typed numbers.** Totals and pacing come from formulas, so they cannot drift from the underlying records.
-- **Status lives where people look.** The automation reports results into Notion itself, so nobody has to open Make to find out why a file did not go through.
-- **Fail loudly, retry safely.** Failures are labelled and retried, and a file fingerprint stops a retry or re-upload from creating duplicates.
+## Design decisions
+
+- **Notion as the interface.** The database is both the control panel and the audit log: status, errors and timestamps all live next to the statement.
+- **Fingerprint, not file name.** Renamed or re-uploaded statements are still caught.
+- **Retries with a dead-letter queue.** Failed items are retried, then parked for review rather than silently lost.
+- **Failures are visible.** A failed item stays in the database with its error, and can be retried by setting its status back.
 
 ## Stack
 
-Notion (advanced relations, rollups, Formulas 2.0), Make.com, built with Claude
+| Layer | Tools |
+|---|---|
+| Workspace and data model | Notion databases, relations, rollups, Formulas 2.0 |
+| Automation | Make.com (database watch, routers, filters, HTTP, error handlers) |
+| State | Make data store (file fingerprints) |
+| Built with | Claude |
